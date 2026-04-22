@@ -1,0 +1,343 @@
+Étape 1 — Cadrage du projet
+
+1. Une erreur de type faux négatif ou faux positif est-elle plus coûteuse ?
+
+Dans le contexte de la modération d'avis Amazon, le faux positif est le plus coûteux (un avis
+négatif classé positif) :
+• Conséquence directe : un client insatisfait voit son insatisfaction ignorée par le système de
+veille qualité. Le problème produit n'est pas remonté aux équipes concernées et persiste.
+• Risque réputationnel : si le système alimente une réponse automatique ('Merci pour votre avis
+positif !') à un client mécontent, l'expérience devient catastrophique et peut devenir virale.
+• Coût business : l'insatisfaction non détectée contribue au churn silencieux (clients qui partent
+sans se plaindre), beaucoup plus difficile à récupérer.
+À l'inverse, un faux négatif (avis positif classé négatif) entraîne seulement une vérification humaine
+inutile — coût marginal en temps, aucune conséquence grave.
+Implication pratique : optimiser le recall sur la classe négative (classe 0), quitte à abaisser légèrement le
+seuil de décision du modèle.
+
+2. Quelles populations pourraient être discriminées si le modèle est biaisé ?
+
+Même si ce dataset ne contient pas de données personnelles explicites, des biais indirects peuvent
+affecter certains groupes :
+• Locuteurs non natifs de l'anglais : un style d'écriture plus formel ou direct peut être mal
+interprété. Un avis globalement positif mais écrit de manière sobre ('Product works as expected.
+Acceptable quality.') peut être classé négatif par manque de superlatifs.
+• Dialectes et argot moderne : expressions comme 'bussin', 'goated', 'slaps' (très positives en
+argot américain récent) sont absentes du vocabulaire TF-IDF d'entraînement → classées neutres
+ou négatives.
+• Avis sarcastiques : 'Oh super, exactement ce que je voulais... tomber en panne en 2 jours.' est
+un avis très négatif que TF-IDF classera positif (détecte 'super', 'exactement', sans comprendre
+l'ironie). Le sarcasme est quasi-indétectable en Bag-of-Words.
+• Cultures à expression indirecte : certaines cultures expriment le mécontentement de façon
+moins explicite qu'en anglais américain.
+
+
+
+Étape 2 — Préparation des données
+
+1. Votre dataset est-il équilibré ? Quelle proportion de chaque classe ?
+
+■ Oui, parfaitement équilibré : exactement 500 avis positifs (sentiment=1) et 500 avis négatifs
+(sentiment=0), soit exactement 50%/50%. C'est un équilibre intentionnel — le dataset UCI a été
+construit avec une annotation équilibrée pour faciliter l'entraînement.
+Conséquences pratiques :
+• L'accuracy est une métrique valide ici (contrairement au churn ~26%/74% où elle serait
+trompeuse)
+• Le F1-macro = F1-weighted dans ce cas précis car les classes sont de taille identique
+• Pas besoin de techniques de rééchantillonnage (SMOTE, undersampling) ni de class_weight
+Malgré cet équilibre, le F1-macro reste préférable car il traite les deux classes symétriquement et mesure
+séparément la performance sur les positifs ET les négatifs.
+
+2. Y a-t-il des variables potentiellement sensibles ? Faut-il les exclure ?
+
+Non, pas de variables sensibles directes. Le dataset contient uniquement :
+• Le texte brut de l'avis (champ 'avis')
+• Un label binaire de sentiment (0 ou 1)
+Il n'y a aucune information personnelle identifiable (PII) : pas de nom, âge, genre, localisation, origine
+ethnique ou données sensibles au sens du RGPD.
+Nuance importante : des biais indirects peuvent émerger si le modèle apprend des corrélations
+spurieuses — par exemple, si certains types de produits achetés majoritairement par une population
+sont systématiquement mal évalués. Dans ce dataset généraliste, le risque est faible mais doit être
+documenté dans la fiche modèle.
+En production (couplage avec des données d'identité client), une DPIA (Data Protection Impact
+Assessment) deviendrait nécessaire.
+
+3. Quel prétraitement avez-vous appliqué et pourquoi ?
+TF-IDF (Term Frequency — Inverse Document Frequency) avec unigrammes + bigrammes
+(ngram_range=(1,2)), max_features=500, stop_words='english' :
+• Pourquoi TF-IDF ? Convertit le texte brut (non numérique) en vecteurs numériques exploitables
+par les modèles sklearn. La pondération IDF réduit l'importance des mots très fréquents ('the', 'is',
+'this') qui n'ont pas de valeur discriminante, et amplifie les mots rares mais informatifs ('excellent',
+'terrible', 'defective').
+• Pourquoi les bigrammes ? Capturent le contexte local indispensable pour les négations : 'not
+good' est diamétralement opposé à 'good'. Sans bigrammes, 'not good' contribuerait positivement
+via 'good'. Avec bigrammes, 'not good' devient une feature distincte avec un coefficient négatif.
+• Pourquoi stop_words='english' ? Supprime 318 mots vides sans valeur sémantique (articles,
+prépositions, auxiliaires). Réduit le bruit et la dimensionnalité, améliore la qualité des features
+retenues dans les 500 max_features.
+• Pourquoi max_features=500 ? Limite le vocabulaire aux 500 tokens les plus fréquents pour
+éviter l'overfitting sur des mots très rares (hapax), réduire la dimensionnalité et accélérer
+l'entraînement.
+• Pas de StandardScaler : TF-IDF applique déjà une normalisation L2 par défaut (chaque vecteur
+a une norme unitaire). Appliquer un StandardScaler sur une matrice sparse TF-IDF densifierait la
+matrice (remplacerait les zéros par des valeurs négatives), explosant la mémoire et ralentissant
+les calculs inutilement.
+
+
+
+Étape 3 — Modélisation : 3 modèles à comparer
+
+1. Quel modèle obtient les meilleures performances sur votre cas ?
+
+Sur le Cas B (NLP, TF-IDF, 1000 avis Amazon), la Régression Logistique obtient
+systématiquement les meilleures ou égales performances, avec une accuracy typique de
+82–86% et un F1-macro similaire. XGBoost et Random Forest sont généralement légèrement en
+retrait (78–84%).
+
+Résultats typiques observés :
+
+Logistic Regression Accuracy : ~84–86% F1-macro : ~0.84–0.86 F1-weighted : ~0.84–0.86
+Random Forest Accuracy : ~78–82% F1-macro : ~0.78–0.82 F1-weighted : ~0.78–0.82
+XGBoost Accuracy : ~80–84% F1-macro : ~0.80–0.84 F1-weighted : ~0.80–0.84
+
+2. La Régression Logistique est-elle compétitive malgré sa simplicité ?
+
+Oui, et c'est un résultat classique et attendu en NLP avec TF-IDF. Ce résultat contre-intuitif
+s'explique par plusieurs raisons fondamentales :
+• Séparabilité linéaire dans l'espace TF-IDF : en représentation Bag-of-Words à 500
+dimensions, le problème de sentiment est souvent linéairement séparable. La présence de
+'excellent' ou 'terrible' suffit généralement à déterminer le sentiment sans interactions complexes
+entre features.
+• Optimisation pour les matrices sparse : la LR utilise des algorithmes de descente de gradient
+qui exploitent efficacement la sparsité TF-IDF (~95% de zéros). Random Forest et XGBoost sont
+optimisés pour des données denses avec interactions non-linéaires — ils peinent sur des espaces
+aussi creux.
+• Régularisation L2 : la LR inclut une régularisation par défaut (C=1) qui prévient l'overfitting sur
+les 500 features TF-IDF, particulièrement importante avec seulement 800 exemples
+d'entraînement.
+• Principe de parcimonie : les modèles linéaires restent des baselines très solides en NLP
+industriel sur des tâches simples de classification de sentiments. BERT et les transformers
+surpassent la LR, mais leur complexité est rarement justifiable pour des cas simples avec peu de
+données.
+Règle empirique en NLP : toujours tester d'abord LR + TF-IDF avant des modèles complexes. Si LR
+donne 85%, un Random Forest à 83% n'apporte rien en production.
+
+3. Choix : Régression Logistique, pour un argument multidimensionnel :
+
+Critère             LR                          Random Forest           XGBoost
+Performance         ■ Meilleure                 ■ Inférieure            ■ Proche
+Interprétabilité    ■ Coefficients directs      ■ Feature importance    ■ Boîte noire
+Temps d'inférence   ■ <1 ms/avis                ■ 5–20 ms               ■ 5–10 ms
+Mémoire modèle      ■ ~4 KB                     ■ ~50 MB (100 arbres)   ■ ~5 MB
+Coût maintenance    ■ Très faible               ■ Modéré                ■ Élevé
+Conformité AI Act   ■ Explicable nativement     ■ Via SHAP              ■ Via SHAP
+
+Calcul d'impact en production : à 1 million d'avis/jour, la LR (<1ms/avis) traitera le flux sur 1 serveur
+standard. Le Random Forest (10ms/avis) nécessiterait 10 serveurs équivalents pour le même débit —
+coût infra 10x supérieur sans gain de performance.
+De plus, les coefficients de la LR permettent d'expliquer directement chaque décision : 'Cet avis a été
+classé négatif car il contient les termes waste (+0.92), broken (+0.87), disappointed (+0.81).' — exigence
+légale AI Act / RGPD Art. 22.
+
+
+
+Étape 4 — Évaluation approfondie
+
+ANALYSE DE LA MATRICE DE CONFUSION
+
+Lecture de la matrice de confusion : lignes = réalité, colonnes = prédiction.
+Sur 200 exemples de test (100 négatifs + 100 positifs) :
+
+                        Prédit : Négatif (0)        Prédit : Positif (1)
+Réel : Négatif (0)      TN = ~82–86                 FP = ~14–18 
+Réel : Positif (1)      FN = ~10–14                 TP = ~86–90 
+
+
+• Vrais Positifs (TP) : avis positifs correctement identifiés comme positifs
+• Vrais Négatifs (TN) : avis négatifs correctement identifiés comme négatifs
+• Faux Positifs (FP) : avis négatifs classés à tort comme positifs → insatisfactions non détectées
+• Faux Négatifs (FN) : avis positifs classés à tort comme négatifs → modération inutile
+Les valeurs exactes dépendent de l'exécution. Remplacer par les valeurs réelles obtenues lors de
+l'exécution du notebook.
+
+1. Dans votre contexte métier, lequel des FP/FN est le plus coûteux ?
+
+Le Faux Positif (FP) est le plus coûteux dans le contexte Amazon :
+Un FP = un avis négatif classé positif. Conséquences en cascade :
+• Impact client direct : l'insatisfaction n'est pas remontée → le client n'est pas recontacté, son
+problème n'est pas résolu, il publie potentiellement d'autres avis négatifs.
+• Impact produit : si 15% des avis négatifs passent inaperçus, un défaut produit peut persister
+plusieurs semaines avant d'être détecté par les équipes qualité.
+• Impact réputationnel : si le système génère une réponse automatique positive à un client
+mécontent ('Merci pour votre super retour !'), la situation devient virale.
+• Impact business : les avis négatifs non traités augmentent le churn silencieux — le type de
+départ client le plus difficile à anticiper et à récupérer.
+Le FN (avis positif classé négatif) implique uniquement une relecture humaine inutile — coût marginal
+en temps de travail, aucune conséquence sur la satisfaction client.
+Recommandation : abaisser le seuil de décision de 0.5 à 0.4 pour la classe positive, augmentant le recall
+sur les négatifs au prix de quelques FN supplémentaires.
+
+2. Votre meilleur modèle est-il suffisant pour un déploiement réel ? Quelles garanties ?
+
+Non, pas sans garanties supplémentaires. Une accuracy de 84–86% signifie que 14–16% des avis
+sont mal classés. À 1 million d'avis/jour, cela représente 140 000–160 000 erreurs quotidiennes —
+inacceptable pour un pipeline entièrement automatisé.
+Garanties nécessaires avant déploiement :
+• Seuil de confiance : n'automatiser que les prédictions avec probabilité >0.85 (~60% du flux).
+Renvoyer les 40% ambigus à un modérateur humain. Gain : les décisions automatisées seront
+correctes à >95%.
+• Monitoring en production : surveiller la distribution des scores de confiance et le taux d'erreur
+hebdomadaire. Un drift soudain (nouveau produit, événement viral) signale que le modèle
+nécessite un réentraînement.
+• Réentraînement périodique : le vocabulaire Amazon évolue constamment. Réentraîner tous les
+3 mois sur de nouveaux avis annotés. Mettre en place un pipeline de labellisation continue.
+• Tests adversariaux : tester le modèle sur des avis sarcastiques, des négations complexes, des
+avis en argot. Mesurer la robustesse sur ces cas difficiles.
+• Couverture multilingue : ce modèle ne traite que l'anglais. Pour un déploiement global,
+modèles par langue ou passage à BERT multilingue.
+• Validation A/B : déployer progressivement (10% du trafic) et comparer les métriques business
+(taux de churn, satisfaction client) avec et sans le modèle.
+
+
+
+Étape 5 — Explicabilité SHAP
+
+1. Quelles sont les 3 variables les plus influentes selon SHAP ?
+
+Sur le Cas B (NLP Amazon), les features SHAP sont des mots et bigrammes TF-IDF. Les top
+features typiquement observées :
+
+Rang        Feature (mot/bigramme)      Direction       Interprétation
+1           'great' / 'excellent'       → POSITIF       Adjectif laudatif universel
+2           'waste' / 'worst'           → NÉGATIF       Expression d'insatisfaction forte
+3           'easy' / 'works great'      → POSITIF       Facilité d'usage, fonctionnalité
+4           'terrible' / 'useless'      → NÉGATIF       Qualification très négative
+5           'perfect' / 'love'          → POSITIF       Satisfaction maximale
+
+Les valeurs exactes dépendent de l'exécution — lire le tableau 'TOP 10 MOTS PAR IMPORTANCE SHAP'
+affiché dans le notebook pour les résultats précis.
+
+2. Ces variables sont-elles cohérentes avec votre intuition métier ?
+
+Oui, totalement cohérentes — et c'est une validation forte de la qualité du modèle. Si SHAP avait
+identifié des mots neutres ('the', 'product', 'bought', 'received') comme très influents, cela aurait
+signalé un overfitting grave ou une fuite de données dans le pipeline.
+Cohérence attendue :
+• Les mots positivement associés à la classe 1 ('great', 'excellent', 'perfect', 'love', 'easy', 'amazing')
+sont exactement les termes qu'un humain utiliserait pour exprimer une satisfaction — validation de
+bon sens.
+• Les mots négativement associés ('waste', 'terrible', 'worst', 'broken', 'useless', 'disappointed') sont
+des marqueurs universels d'insatisfaction produit.
+Cas particulièrement instructif des bigrammes :
+• 'not good' → contribue négativement (SHAP <0), même si 'good' seul est positif. Le bigramme
+capture la négation correctement.
+• 'not bad' → peut contribuer positivement — litote anglaise signifiant 'assez bien'. Cas fascinant où
+le bigramme inverse la sémantique du mot central.
+• 'not working' → fortement négatif — indication de défaillance produit.
+C'est précisément pour cela que ngram_range=(1,2) est indispensable en analyse de sentiments : les
+unigrammes seuls ne captent pas les négations.
+
+3. Si une variable sensible apparaît parmi les plus importantes, que faut-il faire ?
+
+Même si ce dataset textuel ne contient pas de variables sensibles directes, voici la démarche
+complète à appliquer si une telle variable émergeait :
+• Étape 1 — Identifier et qualifier : déterminer via SHAP exactement quelle feature sensible est
+sur-représentée (ex : un prénom, un nom de pays, un terme à connotation démographique).
+Mesurer son importance SHAP absolue.
+• Étape 2 — Analyser la source du biais : est-ce une corrélation causale (la feature est
+réellement prédictive du sentiment) ou spurieuse (corrélation de dataset d'entraînement par
+hasard) ? Exemple : si 'Samsung' apparaît comme très prédictif, est-ce parce que les produits
+Samsung ont plus de mauvaises critiques, ou par biais de sélection du dataset ?
+• Étape 3 — Corriger selon le cas :
+• Si biais spurieux : retirer la feature du vocabulaire TF-IDF via un filtre explicite dans le
+vectorizer.
+• Si corrélation réelle mais indésirable : ré-équilibrer le dataset d'entraînement pour briser la
+corrélation.
+• Étape 4 — Valider : recalculer les métriques après correction, vérifier que les performances
+restent acceptables et que la feature sensible n'apparaît plus dans le top SHAP.
+• Étape 5 — Documenter : noter dans la Model Card le biais identifié, la correction apportée,
+l'impact sur les métriques, et les limitations résiduelles. Document obligatoire pour tout modèle
+déployé en production (best practice).
+
+
+
+Étape 6 — Conformité AI Act
+
+TABLEAU DE CONFORMITÉ
+
+Critère                     Analyse pour le Cas B
+
+Niveau de risque AI Act     RISQUE MINIMAL Le système classe des avis textuels commerciaux. Aucun impact direct sur l'emploi, la justice, le crédit, l'accès aux services essentiels ou les droits fondamentaux.
+
+Justification du niveau     Modération de contenu commercial non contraignante. L'utilisateur n'est pas affecté de façon significative par cette décision (son avis reste visible ou est soumis à révision humaine).
+                            Secteur e-commerce = faible risque systémique.
+
+Base légale RGPD            INTÉRÊT LÉGITIME (Art. 6.1.f RGPD) : l'entreprise a un intérêt légitime à modérer automatiquement les avis de sa plateforme pour assurer la qualité du service. Si les avis sont soumis volontairement et publiquement, le consentement n'est pas requis.
+
+DPIA requis ?               NON requis a priori. Les données traitées (texte libre + label) ne permettent pas l'identification des personnes. Si couplé à des données client (nom, compte), une DPIA devient recommandée.
+
+Explicabilité requise       RECOMMANDÉE (non obligatoire légalement au niveau minimal). Les coefficients de la LR permettent d'expliquer toute décision : 'Classé négatif car waste(+0.92), broken(+0.87), disappointed(+0.81).'
+
+Supervision humaine         RECOMMANDÉE pour les cas ambigus (confiance <0.8). La décision finale de suppression/publication ne doit pas être 100% automatisée. Un modérateur humain valide les décisions à fort impact.
+
+Audit et traçabilité        Logging horodaté des prédictions, versioning des modèles (MLflow/DVC), conservation des datasets d'entraînement, métriques de drift en production. Audit interne semestriel.
+
+Droits des personnes        Droit d'accès à la décision (Art. 15 RGPD), droit de rectification (Art. 16), droit d'opposition aux décisions automatisées significatives (Art. 22). Bouton 'Contester la classification' avec réponse humaine sous 72h.
+
+
+1. Votre système nécessite-t-il un audit de conformité avant déploiement ? Par qui ?
+
+Pour un système de risque minimal, un audit externe obligatoire n'est pas imposé par l'AI Act.
+Cependant, une auto-évaluation documentée est fortement recommandée et constitue une bonne
+pratique professionnelle :
+• Audit interne (DPO + équipe ML) : vérification de la base légale RGPD, de la minimisation des
+données, de la documentation du modèle (model card), des procédures de contestation. Délai :
+2–4 semaines avant déploiement.
+• Test de biais : évaluation des performances par sous-groupe (produits, catégories), vérification
+qu'aucun groupe n'est systématiquement désavantagé.
+• Revue sécurité : vérifier que le système n'est pas vulnérable aux attaques adversariales
+(injection de texte spécifiquement conçu pour tromper le modèle).
+Si évolution vers décision à effet significatif (ex : suspension de compte suite à avis frauduleux détecté)
+→ passage en risque limité ou haut risque, nécessitant un audit tiers certifié et une notification à l'AI Office
+de l'UE.
+
+2. Les personnes affectées ont-elles un droit de recours ?
+
+Oui, en vertu du RGPD Article 22 ('Droit de ne pas faire l'objet d'une décision fondée exclusivement
+sur un traitement automatisé'), si la décision produit des effets juridiques ou significatifs sur la
+personne.
+Droits applicables dans ce contexte :
+• Droit d'accès (Art. 15) : le client peut demander quelles données ont été utilisées pour classifier
+son avis et pourquoi il a été jugé négatif/positif.
+• Droit de rectification (Art. 16) : si la classification est erronée, le client peut demander la
+correction et la republication de son avis.
+• Droit d'opposition (Art. 21) : s'opposer à ce que son avis soit traité par un algorithme
+automatisé et demander une révision exclusivement humaine.
+• Droit à la portabilité (Art. 20) : obtenir une copie de ses données de commentaires dans un
+format réutilisable.
+Mise en œuvre pratique :
+• Bouton 'Contester la classification' visible sur chaque avis
+• Formulaire de contestation avec réponse humaine garantie sous 72h
+• Journal d'audit conservé 3 ans pour prouver la traçabilité des décisions
+• Procédure documentée de révision et de correction des erreurs de classification
+
+3. Quel organisme de contrôle surveille ce type de système dans votre secteur ?
+
+Plusieurs organismes ont des compétences sur ce type de système :
+• CNIL (Commission Nationale de l'Informatique et des Libertés) : contrôle la conformité
+RGPD du traitement de données personnelles associées aux avis. Peut sanctionner jusqu'à 4% du
+CA mondial ou 20M€ (le plus élevé des deux) en cas de violation grave. Référentiel IA de la CNIL
+publié en 2022.
+• DGCCRF (Direction Générale de la Concurrence, Consommation et Répression des
+Fraudes) : surveille les pratiques de modération d'avis en ligne en France. La loi impose la
+transparence sur les modalités de collecte, de traitement et de modération des avis clients (Décret
+2017-1436, norme NF Z74-501).
+• AI Office européen (créé par l'AI Act, opérationnel 2025) : supervise les systèmes d'IA à
+risque élevé et les pratiques des opérateurs de plateformes numériques. Coordonne les autorités
+nationales de surveillance de l'IA.
+• DSA — Digital Services Act (pour les très grandes plateformes) : les plateformes avec >45M
+utilisateurs actifs en UE (Amazon, Meta...) ont des obligations renforcées de transparence
+algorithmique, d'audit annuel par des tiers indépendants, et de rapport de risques systémiques.
+• ANSSI (Agence Nationale de la Sécurité des SI) : si le système traite des données sensibles
+ou est déployé dans un contexte critique, l'ANSSI peut intervenir sur les aspects cybersécurité du
+pipeline ML.
