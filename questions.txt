@@ -1,0 +1,304 @@
+Etape 1
+
+1. Combien d'échantillons par classe ? Le dataset est-il équilibré ?
+
+Chaque classe (setosa, versicolor, virginica) contient exactement 50 échantillons, pour un total de
+150. La distribution est donc parfaitement équilibrée (33,3% par classe). C'est une situation idéale :
+l'accuracy est ici une métrique fiable car elle n'est pas biaisée par une sur-représentation d'une
+classe. Dans la vraie vie, les datasets sont rarement aussi équilibrés — la détection de fraude, par
+exemple, peut avoir 99% de transactions légitimes et 1% frauduleuses, ce qui rend l'accuracy
+trompeuse.
+
+2. Y a-t-il des valeurs manquantes ?
+
+Non, aucune valeur manquante (isnull().sum().sum() retourne 0). Le dataset est propre et
+directement utilisable. Dans un projet réel, cette étape est critique : des valeurs manquantes non
+traitées faussent l'entraînement et peuvent provoquer des erreurs. Les stratégies courantes sont
+l'imputation par moyenne/médiane, par un modèle prédictif, ou la suppression des lignes concernées
+si elles sont peu nombreuses.
+
+3. Quelles variables semblent a priori les plus discriminantes ?
+
+En examinant les statistiques descriptives (describe()), petal_length présente l'écart-type le plus
+élevé (~1.76) et petal_width également (~0.76), signalant une forte variabilité inter-classes. La
+moyenne de petal_length varie de ~1.5 cm (setosa) à ~5.5 cm (virginica), soit un écart de 4 cm. À
+l'inverse, sepal_width a un écart-type faible et ses valeurs se chevauchent beaucoup entre espèces.
+Conclusion intuitive : les features de pétales seront les plus discriminantes — ce que SHAP
+confirmera à l'étape 5.
+
+
+Certaines paires de variables permettent-elles de séparer visuellement les 3 espèces ?
+Lesquelles semblent les plus efficaces ?
+Le pairplot révèle de façon très claire la structure du dataset. Setosa (points bleus) est parfaitement
+isolée dans toutes les projections impliquant les pétales : elle forme un cluster compact dans le coin
+inférieur gauche, séparé des deux autres espèces par une frontière nette et large. C'est une classe
+linéairement séparable.
+Versicolor et Virginica se chevauchent légèrement dans toutes les projections, notamment sur
+petal_length / petal_width. Ce chevauchement partiel expliquera les quelques erreurs de classification
+que le modèle commettra invariablement entre ces deux espèces.
+Couples les plus efficaces pour la séparation :
+• petal_length / petal_width : meilleure séparation globale des 3 espèces
+• petal_length / sepal_length : très bonne séparation également
+• sepal_length / sepal_width : peu discriminant, fort chevauchement entre les 3 classes
+Ce constat visuel a une implication directe : un modèle entraîné uniquement sur les deux features de
+pétales obtiendrait probablement des performances quasi-identiques à un modèle entraîné sur les 4
+features. C'est ce que SHAP confirmera quantitativement.
+
+
+
+Etape 2
+
+Pourquoi commencer par une baseline simple (Decision Tree) avant un modèle
+plus complexe (Random Forest) ?
+Commencer par une baseline répond à un principe fondamental du Machine Learning : toujours
+disposer d'un point de comparaison fiable. La baseline définit le plancher de performance
+minimum — si le modèle complexe ne la surpasse pas significativement, sa complexité additionnelle
+n'est ni justifiée ni souhaitable.
+Raisons concrètes :
+• Interprétabilité : un Decision Tree à profondeur 3 est directement lisible et visualisable. On
+comprend exactement quelle règle s'applique à chaque nœud, ce qui permet de valider la logique
+du modèle.
+• Diagnostic précoce : si la baseline obtient déjà 95% d'accuracy, le problème est
+intrinsèquement simple et un Random Forest n'apportera qu'un gain marginal. Si la baseline
+plafonne à 60%, cela indique que le problème est difficile et qu'un modèle plus puissant est
+nécessaire.
+• Détection de problèmes : des performances anormalement basses même sur la baseline
+signalent souvent un problème de données (mauvais encodage, features inutiles, bruit excessif)
+qu'il vaut mieux corriger avant d'aller plus loin.
+• Principe de parcimonie : toujours préférer le modèle le plus simple qui résout le problème.
+Plus un modèle est complexe, plus il est coûteux à entraîner, à interpréter, à maintenir et à
+déployer. La complexité doit être justifiée par un gain mesurable.
+
+
+
+Etape 3
+
+1. Le Random Forest surpasse-t-il le Decision Tree ? Par quelle marge ?
+
+Sur le dataset Iris, les deux modèles obtiennent des performances très proches, généralement autour
+de 96–100%. La marge du Random Forest sur le Decision Tree est typiquement de 0 à 3 points de
+pourcentage en accuracy, et similaire en F1-score.
+Cette proximité des scores s'explique par la nature du dataset : Iris est un problème relativement
+simple, presque linéairement séparable pour deux classes sur trois (setosa est parfaitement isolée).
+Un arbre de décision simple à profondeur 3 est déjà suffisant pour capturer l'essentiel de la structure
+des données.
+La différence serait bien plus significative sur un dataset réel complexe (données tabulaires bruitées,
+milliers de features, classes déséquilibrées) : dans ces cas, le Random Forest surpasse généralement le
+Decision Tree de 5 à 15 points, grâce à la réduction de variance apportée par l'ensemble d'arbres
+(bagging).
+
+2. Y a-t-il des espèces plus difficiles à classifier que d'autres ? Pourquoi ?
+
+Oui, clairement. Les trois espèces ne présentent pas la même difficulté de classification :
+• Setosa : classifiée parfaitement (precision = recall = F1 = 1.0 dans presque toutes les
+exécutions). Ses dimensions de pétales sont si distinctement petites qu'elle forme un cluster
+totalement séparé. Aucun chevauchement avec les autres espèces.
+• Versicolor : performance légèrement réduite. Ses dimensions de pétales se chevauchent
+partiellement avec celles de Virginica, notamment autour de petal_length ~ 4.5–5 cm.
+• Virginica : idem, peut être confondue avec Versicolor. Les rares erreurs dans la matrice de
+confusion se concentrent sur la frontière Versicolor/Virginica.
+Explication biologique : Setosa est une espèce génétiquement très distincte des deux autres
+(différent sous-genre). Versicolor et Virginica sont beaucoup plus proches phylogénétiquement, ce qui
+se traduit par un chevauchement morphologique de leurs pétales. La matrice de confusion le confirme
+visuellement : les cases hors-diagonale (erreurs) apparaissent uniquement sur la ligne/colonne
+Versicolor–Virginica
+
+3. Quelle différence entre accuracy et F1-score ? Dans quel cas préférer l'un à l'autre ?
+
+Accuracy = (nombre de prédictions correctes) / (nombre total de prédictions)
+C'est la métrique la plus intuitive. Elle mesure la proportion globale de bonnes réponses. Limite
+majeure : elle est trompeuse sur des datasets déséquilibrés. Exemple : un dataset avec 95% de
+classe A et 5% de classe B — un modèle qui prédit toujours A obtient 95% d'accuracy sans rien
+apprendre.
+F1-score = 2 × (Précision × Rappel) / (Précision + Rappel)
+C'est la moyenne harmonique entre la précision (parmi les positifs prédits, combien sont vrais ?) et le
+rappel (parmi les vrais positifs, combien ont été détectés ?). Il pénalise fortement les modèles qui
+ignorent une classe minoritaire.
+Quand préférer chaque métrique :
+• Accuracy : dataset parfaitement équilibré (comme Iris), contexte où toutes les erreurs ont le
+même coût
+• F1-score : classes déséquilibrées (fraude, détection de maladie rare), ou coût asymétrique des
+erreurs
+• Cas médical : un faux négatif (maladie non détectée) est bien plus grave qu'un faux positif →
+privilégier le rappel et donc le F1
+Sur Iris (dataset équilibré), les deux métriques donnent des résultats très similaires. Dans un vrai projet,
+toujours vérifier l'équilibre des classes avant de choisir sa métrique principale.
+
+
+
+Etape 4
+
+1. À partir de quelle profondeur observe-t-on de l'overfitting (score train >> score test) ?
+
+L'overfitting commence à se manifester à partir de max_depth ≈ 7 à 9. Au-delà de cette valeur, le
+score d'entraînement atteint 1.0 (100%) tandis que le score de test stagne ou diminue légèrement.
+Lecture du graphique :
+• max_depth 1–2 : underfitting — le modèle est trop simple pour capturer la structure des
+données. Les deux scores sont bas (~80–85%).
+• max_depth 3–6 : zone idéale — les deux scores sont élevés et proches. Le modèle généralise
+bien.
+• max_depth 7+ : le score train monte vers 1.0 mais le score test stagne. L'écart entre les deux
+courbes s'élargit : c'est la signature de l'overfitting.
+Définition de l'overfitting : le modèle mémorise les données d'entraînement au lieu d'apprendre des
+patterns généralisables. Il crée des règles ultra-spécifiques qui capturent le bruit statistique propre
+aux données d'entraînement, et qui ne se retrouvent pas dans de nouvelles données.
+Sur Iris, l'effet reste modéré (dataset simple et peu bruité). Sur un dataset réel avec du bruit et peu
+d'échantillons, l'écart serait beaucoup plus prononcé.
+
+2. Quel nombre d'arbres offre le meilleur compromis performance / coût de calcul ?
+
+La validation croisée montre que les scores se stabilisent dès n_estimators = 50 à 100. Passer de
+100 à 500 arbres améliore la performance de moins de 0,5% en moyenne, mais multiplie le temps
+d'entraînement par ~5.
+Analyse par palier :
+• n_estimators = 10 : variance élevée, scores instables (±2–3%). Insuffisant.
+• n_estimators = 25–50 : bonne stabilité, performances proches du maximum. Bon compromis
+léger.
+• n_estimators = 100 : compromis optimal. Performance quasi-maximale, temps raisonnable.
+Valeur par défaut de scikit-learn.
+• n_estimators = 200–500 : gain marginal (<0.5%), coût de calcul disproportionné.
+Règle pratique : commencer à 100 arbres. Si le temps de calcul est critique, descendre à 50. Si les
+performances sont insuffisantes, monter à 200–300 — mais chercher d'abord à améliorer les features ou le
+preprocessing plutôt qu'à augmenter le nombre d'arbres.
+
+3. Qu'apporte la validation croisée par rapport à un simple split train/test ?
+
+Un simple split train/test a un défaut fondamental : il dépend du hasard. Selon comment les 30
+exemples de test sont tirés, le score peut varier de plusieurs points de pourcentage. Si les exemples
+test sont « faciles », le score est surestimé. S'ils sont atypiques, il est sous-estimé. On ne sait pas
+lequel est le cas.
+La validation croisée k-fold résout ce problème :
+• Divise les données en k parties (ici k=5) de taille égale
+• Entraîne k modèles différents, chacun testé sur une partie différente
+• Calcule la moyenne des k scores → estimation plus robuste et moins biaisée
+• Calcule l'écart-type des scores → mesure la variance du modèle
+Avantages concrets :
+• Utilise 100% des données à la fois pour l'entraînement et le test (chaque exemple est testé
+exactement une fois)
+• Détecte si le modèle est stable (faible écart-type) ou instable (forte variance)
+• Essentiel pour comparer deux modèles de façon fiable
+Inconvénient : k fois plus coûteux en calcul. Sur Iris (150 exemples), c'est négligeable. Sur un dataset de
+10M lignes avec un modèle complexe, la 5-fold cross-validation peut prendre des heures.
+
+
+
+Etape 5
+
+1. Quelle variable est la plus déterminante selon SHAP ? Est-ce cohérent avec votre intuition ?
+
+Selon SHAP, petal_length est systématiquement la variable la plus déterminante, suivie de très près
+par petal_width. Ces deux features représentent ensemble la quasi-totalité du pouvoir prédictif du
+modèle (souvent plus de 80–90% de la contribution SHAP totale).
+sepal_length contribue modestement, et sepal_width est la feature la moins utile — sa valeur SHAP
+moyenne est quasi nulle pour certaines classes.
+Cohérence avec l'intuition : Oui, totalement. Dès l'étape 1, le pairplot montrait visuellement que les
+pétales séparaient bien mieux les espèces que les sépales. SHAP le confirme mathématiquement et
+le quantifie précisément pour chaque prédiction individuelle.
+Ce résultat est aussi cohérent biologiquement : les dimensions des pétales varient beaucoup plus entre
+espèces d'iris que les sépales, ce qui explique leur pouvoir discriminant supérieur
+
+2. Quelle différence entre l'importance sklearn (MDI) et l'importance SHAP ?
+
+Feature Importance sklearn — MDI (Mean Decrease Impurity) :
+• Mesure combien chaque feature réduit l'impureté de Gini en moyenne dans tous les arbres
+• Calculée à l'entraînement, une seule valeur globale par feature
+• Rapide à calculer, mais biaisée vers les features à haute cardinalité (nombreuses valeurs
+uniques)
+• Ne dit rien sur le sens de la contribution (positive/négative) ni sur les interactions entre features
+• Ne permet pas d'expliquer une prédiction individuelle
+Feature Importance SHAP :
+• Basée sur la théorie des jeux de Shapley : chaque feature reçoit sa contribution marginale
+équitable
+• Calculée par prédiction et agrégée ensuite — permet l'explicabilité locale ET globale
+• Plus coûteuse à calculer mais théoriquement fondée et non biaisée
+• Indique le sens de l'impact : valeur SHAP positive = pousse vers la classe, négative = la
+contre-indique
+• Permet de détecter des interactions entre features
+En pratique sur Iris : les deux méthodes donnent un classement similaire (petal_length > petal_width >
+sepal_length > sepal_width), mais SHAP est plus informatif et utilisable en production pour justifier des
+décisions individuelles.
+
+3. Pourquoi l'explicabilité est-elle cruciale dans un contexte réglementé (médical, crédit bancaire) ?
+
+Dans les domaines réglementés, une décision doit être justifiable et auditable. Un modèle "boîte
+noire" qui répond "refusé" ou "maladie détectée" sans explication est à la fois inutilisable sur le plan
+légal et dangereux sur le plan éthique.
+Obligations légales en Europe :
+• RGPD – Article 22 : toute décision automatisée affectant un individu doit pouvoir être
+expliquée. Un client refusé pour un crédit a le droit légal d'obtenir les raisons de ce refus.
+• AI Act européen (2024) : les systèmes d'IA à haut risque (médical, RH, crédit) doivent être
+transparents et explicables par design.
+Enjeux pratiques :
+• Contexte médical : SHAP permet de dire "Ce patient a été classé à risque élevé
+principalement à cause de sa glycémie et de son IMC". Le médecin peut valider ou invalider ce
+raisonnement, ce qui est impossible avec une boîte noire.
+• Contexte bancaire : "Votre crédit est refusé principalement en raison d'un ratio d'endettement
+de 45% (seuil critique : 35%)". Information actionnable pour le client, auditable pour le régulateur.
+• Détection de biais : SHAP peut révéler qu'un modèle de recrutement utilise implicitement le
+code postal comme proxy de l'origine ethnique — un biais discriminatoire qu'une simple accuracy
+ne détecterait jamais.
+
+
+
+Etape 6
+
+Insight 1 — Performance
+
+Observation :
+Le Random Forest atteint une accuracy de 97–100% sur le jeu de test, légèrement supérieure au
+Decision Tree baseline (96–97%). Les deux modèles classifient setosa parfaitement (F1 = 1.0). Les
+rares erreurs concernent uniquement la frontière Versicolor/Virginica, visible dans la matrice de
+confusion.
+
+Explication :
+Le Random Forest agrège les votes de 100 arbres de décision entraînés sur des sous-ensembles
+aléatoires des données et des features (bagging + feature randomness). Cette diversité réduit la
+variance du modèle et le rend moins sensible aux exemples atypiques qu'un seul arbre. Sur Iris
+(problème simple et équilibré), le gain est faible car la baseline est déjà très performante. Sur des
+données réelles bruitées, le gain serait bien plus significatif.
+
+Implication pratique :
+Avant de déployer un modèle complexe, toujours vérifier si le gain de performance justifie le coût
+supplémentaire (temps de calcul, mémoire, complexité de maintenance, perte d'interprétabilité). Sur
+un problème simple et équilibré, une baseline bien tunée peut suffire. Complexifier seulement si
+nécessaire et mesurable.
+
+■ Insight 2 — Overfitting & Généralisation
+
+Observation :
+L'overfitting se manifeste à partir de max_depth ≈ 7–9 : le score d'entraînement atteint 1.0 (100%)
+tandis que le score de test stagne ou diminue légèrement. En dessous de max_depth = 3, le modèle
+sous-apprend (underfitting). La zone optimale se situe entre max_depth = 4 et 6 sur Iris.
+
+Explication :
+L'overfitting survient quand un modèle est trop complexe par rapport aux données disponibles : il
+mémorise le bruit d'entraînement au lieu d'apprendre des patterns généraux. Un arbre trop profond
+crée des règles ultra-spécifiques ("si petal_length = 4.723 ET sepal_width = 3.012 ALORS Virginica")
+qui ne se généralisent pas à de nouvelles données. Le sous-apprentissage est l'inverse : le modèle
+est trop simple pour capturer la structure réelle du problème.
+
+Implication pratique :
+Utiliser la validation croisée pour choisir max_depth et n_estimators plutôt qu'un simple split.
+Surveiller systématiquement l'écart entre score train et score test : un écart > 5–10% est un signal
+d'alerte. Régulariser (limiter max_depth, augmenter min_samples_split, ajouter du dropout pour les
+réseaux de neurones) et valider toujours sur des données réellement non vues.
+
+■ Insight 3 — Explicabilité SHAP
+
+Observation :
+Selon SHAP, petal_length est la variable la plus déterminante pour les 3 classes, suivie de
+petal_width. sepal_width contribue de façon négligeable. Ce classement est cohérent avec l'analyse
+visuelle du pairplot réalisée à l'étape 1 : les pétales séparaient bien mieux les espèces que les
+sépales.
+
+Explication :
+La longueur et la largeur des pétales varient significativement entre espèces (setosa : pétales très
+petits ~1.5 cm ; virginica : très grands ~5.5 cm). SHAP le confirme mathématiquement via la théorie
+des jeux de Shapley, qui attribue à chaque feature sa contribution marginale équitable à chaque
+prédiction. La cohérence entre l'intuition visuelle et SHAP valide la fiabilité du modèle.
+
+Implication pratique :
+L'explicabilité est obligatoire dans tout contexte réglementé (RGPD Art.22, AI Act) pour justifier les
+décisions automatisées. Elle est aussi essentielle pour détecter des biais cachés : si un modèle de
+crédit utilisait le code postal comme proxy ethnique, SHAP le révélerait immédiatement. Intégrer
+systématiquement une analyse SHAP dans tout pipeline ML destiné à la production.
