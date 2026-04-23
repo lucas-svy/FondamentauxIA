@@ -1,0 +1,415 @@
+TP3 — Deep Learning : classification automatique de produits e-commerce
+Zalando — Fashion-MNIST | Bachelor 3 | Durée : 1h30–2h
+
+
+Étape 1 — Charger et explorer les données produits Zalando
+
+1. Le catalogue est-il équilibré entre les catégories ? Quel impact sur l'entraînement ?
+
+Oui, parfaitement équilibré : chaque catégorie contient exactement 6 000 articles en train (10%
+chacune sur 60 000) et 1 000 en test (sur 10 000). C'est un équilibre intentionnel du dataset Zalando
+Research.
+Impact sur l'entraînement :
+• L'accuracy globale est une métrique fiable ici — chaque classe contribue également à la pénalité
+d'erreur.
+• Le modèle apprend chaque catégorie avec la même quantité d'exemples, sans biais vers une classe
+sur-représentée.
+• Pas besoin de class_weight ni de rééchantillonnage (SMOTE, undersampling).
+• Dans la vraie plateforme Zalando, certaines catégories (T-shirts) auraient bien plus d'articles que
+d'autres (bottines), créant un déséquilibre qui nécessiterait des techniques spécifiques.
+
+2. Un pull et une chemise se ressemblent visuellement : cela pose-t-il un risque de confusion pour
+un algorithme ?
+
+Oui, c'est l'un des défis majeurs de ce dataset. Pull (classe 2) et Chemise (classe 6) partagent une
+silhouette similaire : deux manches, un corps, une ouverture en haut. À 28×28 pixels en niveaux de
+gris, les détails qui les distinguent (col, texture, coupe) sont très difficiles à percevoir.
+La matrice de confusion le confirmera systématiquement : la paire Pull/Chemise est la confusion la
+plus fréquente de tous les modèles testés sur Fashion-MNIST. C'est un phénomène connu et documenté
+dans la littérature — même les CNNs state-of-the-art confondent ces deux catégories plus que toute
+autre paire.
+
+3. La résolution 28×28 pixels est-elle représentative d'un cas de production réel ? Quelle
+résolution utiliserait-on sur la vraie plateforme Zalando ?
+
+Non, 28×28 est une résolution de recherche/benchmark, délibérément réduite pour permettre des
+expériences rapides (784 pixels par image).
+En production réelle sur Zalando :
+• Résolution standard : 224×224 pixels (standard ImageNet), soit ~160x plus de pixels
+• Haute définition : 512×512 ou plus pour les zooms produits, soit ~330x plus de pixels
+• Modèles utilisés : CNNs profonds pré-entraînés (ResNet-50, EfficientNet, Vision Transformer)
+via transfer learning
+La résolution 28×28 ne permettrait pas de distinguer les matières (soie vs coton), certains détails
+de coupe (col, fermetures), ni les motifs imprimés — informations pourtant essentielles pour la
+classification fine d'une marketplace de mode premium.
+
+
+
+Étape 2 — Prétraitement des images
+
+1. Pourquoi normalise-t-on les pixels entre 0 et 1 avant d'entraîner un réseau de neurones ?
+Que se passerait-il si on gardait les valeurs brutes 0–255 ?
+
+Raisons de la normalisation :
+• Convergence de la descente de gradient : les poids du réseau sont initialisés avec de petites
+valeurs (~0.01). Des entrées entre 0 et 255 généreraient des gradients 255x plus grands qu'avec
+des valeurs normalisées, rendant l'apprentissage instable (oscillations, divergence).
+• Plage des fonctions d'activation : ReLU, sigmoid et tanh sont conçues pour des valeurs dans
+[-1, 1] ou [0, 1]. ReLU(0.5) = 0.5 est normal ; ReLU(128) = 128 explose les activations des
+couches suivantes.
+• Égalité des features : sans normalisation, un pixel à 250 aurait 250x plus d'influence qu'un pixel
+à 1 — biais arbitraire lié à la luminosité absolue plutôt qu'aux motifs visuels.
+Sans normalisation (valeurs brutes 0–255) :
+• Gradients très grands → learning rate effectif trop élevé → loss diverge ou oscille
+• Temps de convergence multiplié par 10 à 100
+• Risque de NaN dans les poids (overflow numérique float32)
+• Performances finales significativement dégradées (~5–10% d'accuracy en moins)
+
+
+
+Étape 3 — Baseline : Random Forest (ML classique)
+
+1. Cette accuracy suffit-elle pour atteindre l'objectif business (taux d'erreur < 5 %) ?
+
+Non. Le Random Forest obtient typiquement ~87–88% d'accuracy sur Fashion-MNIST, soit un taux
+d'erreur de ~12–13%. L'objectif business est un taux d'erreur strictement inférieur à 5% (accuracy
+> 95%). La baseline manque l'objectif d'environ 7 à 8 points de pourcentage.
+En termes business : à 12–13% d'erreur, le RF reproduit exactement le taux d'erreur actuel de
+12% constaté sur la plateforme avec la saisie manuelle. Il ne justifierait pas son déploiement car
+il n'apporterait aucune amélioration mesurable.
+
+2. Random Forest traite chaque pixel comme une feature indépendante : comprend-il que les
+pixels voisins forment un contour ou une texture ?
+
+Non, et c'est sa limite fondamentale sur les images. Le Random Forest reçoit un vecteur de 784
+valeurs (pixels aplatis) sans aucune information sur leur position relative. Il traite le pixel en
+position (0,0) comme totalement indépendant du pixel en position (0,1), son voisin immédiat.
+Il ne peut pas détecter :
+• Un contour (transition progressive de pixels voisins formant un bord de manche)
+• Une texture (motif répétitif de pixels formant la maille d'un pull)
+• Une forme (silhouette globale d'une chaussure formée par l'ensemble des pixels)
+Ces relations spatiales locales sont précisément ce que le CNN capturera via ses filtres convolutifs
+3×3, qui traitent chaque pixel dans le contexte de ses 8 voisins immédiats.
+
+
+
+Étape 4 — Réseau de neurones dense (MLP)
+
+1. Combien de paramètres entraînables au total ? Comparez avec le nombre de pixels (784).
+
+Calcul détaillé :
+• Flatten → Dense(128)  : 784 × 128 + 128 (biais) = 100 480 paramètres
+• Dense(128) → Dense(64) : 128 × 64 + 64 (biais)  =   8 256 paramètres
+• Dense(64) → Dense(10)  : 64 × 10 + 10 (biais)   =     650 paramètres
+• Total : 109 386 paramètres entraînables
+C'est environ 140 fois plus que le nombre de pixels d'une image (784). Le réseau apprend des
+combinaisons de pixels bien plus complexes que les pixels bruts eux-mêmes.
+Perspective : une image smartphone de 12 mégapixels nécessiterait ~1,6 milliard de paramètres
+avec cette approche — d'où l'intérêt des CNNs qui partagent les poids via les filtres convolutifs
+(le même filtre 3×3 est réutilisé sur toute l'image, réduisant radicalement le nombre de paramètres).
+
+2. Que fait softmax sur la dernière couche ? Pourquoi est-ce adapté à une classification
+multi-classe ?
+
+Softmax transforme un vecteur de 10 valeurs brutes (logits) en un vecteur de 10 probabilités qui
+somment exactement à 1.0. Formule : softmax(xi) = exp(xi) / somme(exp(xj))
+Pourquoi c'est adapté à la classification multi-classe :
+• Garantit que toutes les sorties sont entre 0 et 1 (interprétables comme probabilités)
+• Garantit que la somme des probabilités = 1.0 (distribution de probabilité valide)
+• Amplifie l'écart entre la classe dominante et les autres (via l'exponentielle)
+• La prédiction finale = argmax du vecteur = la catégorie avec la probabilité la plus haute
+En binaire, on utilise sigmoid (1 seule sortie). En multi-classe, softmax est le généralisé naturel
+qui produit une distribution de probabilité sur l'ensemble des classes.
+
+3. Pourquoi sparse_categorical_crossentropy et pas binary_crossentropy ?
+
+• binary_crossentropy : pour la classification binaire (0 ou 1). Calcule l'erreur sur une seule
+sortie scalaire. Adaptée quand y ∈ {0, 1}.
+• categorical_crossentropy : pour la classification multi-classe avec labels encodés en one-hot
+(ex : [0, 0, 1, 0, 0, 0, 0, 0, 0, 0] pour la classe 2). Requiert une conversion préalable des labels.
+• sparse_categorical_crossentropy : identique à categorical_crossentropy mais accepte
+directement des labels entiers (ex : 2 pour 'Pull'). Le préfixe 'sparse' signifie qu'on n'a pas
+besoin de convertir les labels en vecteurs one-hot, économisant de la mémoire et simplifiant le code.
+Dans notre cas, y_train contient des entiers de 0 à 9 → sparse_categorical_crossentropy est
+le choix naturel, efficace en mémoire (pas de matrice one-hot de taille 60 000 × 10 à stocker).
+
+
+
+Étape 5 — Réseau convolutif (CNN)
+
+1. Pourquoi la sortie de Conv2D(32, 3×3) appliquée à une image 28×28 est-elle 26×26 ?
+
+Un filtre 3×3 doit être centré sur chaque pixel pour produire une valeur de sortie. Sur les pixels
+de bord (première ligne, première colonne, etc.), le centre du filtre 3×3 ne peut pas être placé sans
+que le filtre déborde en dehors de l'image — il n'y a pas de voisins à l'extérieur.
+Résultat : la convolution perd 1 pixel de chaque côté dans chaque dimension :
+• 28 - (3-1) = 28 - 2 = 26 pixels de large
+• 28 - (3-1) = 28 - 2 = 26 pixels de haut
+Ce comportement s'appelle 'valid padding' (par défaut dans Keras). Pour conserver 28×28, on
+peut utiliser padding='same' qui ajoute des zéros (zero-padding) autour de l'image avant
+la convolution, au prix d'une légère dégradation des features en bord d'image.
+
+2. Quel est l'intérêt du MaxPooling2D ? Que se passerait-il sans réduction spatiale ?
+
+MaxPooling(2×2) divise chaque dimension par 2 en gardant la valeur maximale de chaque bloc 2×2.
+Il remplit trois rôles essentiels :
+• Réduction dimensionnelle : 26×26 → 13×13, divisant par 4 le nombre de valeurs. Sans pooling,
+après 2 couches Conv, on aurait 26×26×32 + 24×24×64 ≈ 58 000 valeurs à aplatir au lieu de
+1 600 → explosion du nombre de paramètres et du temps de calcul (×36).
+• Invariance spatiale : le modèle devient moins sensible à la position exacte d'un motif dans
+l'image. Une semelle de chaussure légèrement décalée reste une semelle — propriété essentielle
+pour la robustesse en production (photos pas toujours parfaitement centrées).
+• Régularisation implicite : en réduisant la résolution spatiale, le pooling force le modèle à se
+concentrer sur la présence des motifs plutôt que sur leur localisation exacte.
+
+3. Dropout(0.3) désactive aléatoirement 30 % des neurones à chaque batch. Pourquoi cela
+réduit-il l'overfitting ?
+
+À chaque batch d'entraînement, Dropout met aléatoirement à zéro 30% des neurones. Cela force
+le réseau à :
+• Ne pas dépendre d'un sous-ensemble fixe de neurones pour mémoriser les exemples
+d'entraînement — chaque neurone sait qu'il peut être "éteint" à tout moment.
+• Apprendre des représentations redondantes et distribuées : chaque information doit être encodée
+par plusieurs neurones différents pour être robuste aux désactivations aléatoires.
+• Simuler implicitement l'entraînement de 2^n sous-réseaux différents (n = nombre de neurones
+concernés), puis faire une moyenne de leurs prédictions — similaire au bagging de Random Forest.
+En test, Dropout est désactivé (tous les neurones actifs) et les poids sont multipliés par 0.7
+pour compenser l'absence de désactivations. L'effet net est comparable au model averaging.
+
+
+
+Étape 6 — Courbes d'apprentissage : diagnostic production
+
+1. L'écart train/validation indique-t-il de l'overfitting sur l'un des modèles ?
+
+Réseau dense (MLP) : un léger overfitting apparaît vers les époques 10–15. Le score train continue
+de monter tandis que la validation se stabilise voire légèrement décroît. L'écart final est
+typiquement de 2–4 points. Ce n'est pas alarmant mais suggère que 10–12 époques seraient
+suffisantes — continuer au-delà ne bénéficie qu'au score train.
+CNN : le Dropout(0.3) fait son travail. L'écart train/validation reste inférieur à 2–3 points sur
+l'ensemble des 10 époques. Les deux courbes restent proches et évoluent de façon cohérente.
+C'est le comportement souhaité en production — le modèle généralise bien sur des données non vues.
+
+2. Le CNN converge-t-il plus vite ou plus lentement que le réseau dense ?
+
+Le CNN converge plus vite et atteint une meilleure accuracy finale avec seulement 10 époques,
+contre 15 pour le MLP. Dès les 3–4 premières époques, le CNN dépasse le niveau de validation
+que le MLP atteint seulement en 8–10 époques.
+Explication : le CNN part avec une architecture structurellement adaptée aux images (inductive bias
+fort). Ses filtres convolutifs apprennent des représentations hiérarchiques utiles très rapidement
+(contours dès l'époque 1–2, formes simples dès 3–4). Le MLP doit apprendre ces mêmes motifs
+de façon beaucoup moins efficace via des connexions denses.
+
+3. Si vous deviez mettre un modèle en production demain, quel nombre d'époques choisiriez-vous ?
+
+• Réseau dense : 10–12 époques — au-delà, le modèle commence à overfitter légèrement sans
+gain de validation. La valeur optimale varie selon les runs.
+• CNN : 8–10 époques — les courbes se stabilisent, l'écart train/val reste minimal.
+Recommandation pratique pour la production : ne pas fixer un nombre d'époques à la main.
+Implémenter :
+keras.callbacks.EarlyStopping(patience=3, monitor='val_accuracy', restore_best_weights=True)
+Cela arrête automatiquement l'entraînement dès que la validation ne s'améliore plus pendant 3
+époques consécutives, et restaure les poids du meilleur modèle observé.
+
+
+
+Étape 7 — Comparaison des 3 approches et décision
+
+1. Quel modèle atteint l'objectif business (taux d'erreur < 5 %) ?
+
+Résultats typiques sur Fashion-MNIST avec les architectures du TP :
+Random Forest  : ~87–88% accuracy → ~12–13% d'erreur → Objectif non atteint ❌
+Réseau Dense   : ~88–89% accuracy → ~11–12% d'erreur → Objectif non atteint ❌
+CNN            : ~91–93% accuracy → ~7–9%  d'erreur → Objectif non atteint ❌
+
+Aucun modèle n'atteint strictement < 5% d'erreur avec ces architectures de base. Atteindre 95%+
+sur Fashion-MNIST nécessite des architectures plus profondes (ResNet, EfficientNet), du data
+augmentation, ou du transfer learning depuis ImageNet. Le CNN reste néanmoins le seul candidat
+crédible — il est le plus proche de l'objectif et le seul dont les performances sont améliorables
+sans changer fondamentalement l'approche.
+
+2. Quelles catégories sont le plus souvent confondues ? Est-ce cohérent ?
+
+Confusions les plus fréquentes observées :
+• Chemise ↔ Pull : la plus fréquente (~10–15% des chemises classées comme pulls). Cohérent —
+même silhouette générale, distinction sur la texture et le col difficile à 28×28.
+• T-shirt ↔ Chemise : sans manches longues visibles ou col distinctif, la frontière est floue.
+• Manteau ↔ Pull : longueur similaire, même zone de la garde-robe.
+• Sneaker ↔ Bottine : deux types de chaussures fermées, silhouette similaire à basse résolution.
+Toutes ces confusions sont visuellement cohérentes et documentées dans la littérature
+Fashion-MNIST. Elles reflètent une ambiguïté réelle — même un humain pourrait hésiter sur
+certains de ces articles à 28×28 pixels.
+
+3. Pour la mise en production, faut-il uniquement regarder l'accuracy globale ou aussi le
+recall/precision par catégorie ?
+
+Absolument pas uniquement l'accuracy globale. Pour Zalando, les métriques par catégorie sont
+essentielles pour trois raisons :
+• Recall par catégorie : pour les articles premium (manteaux, bottines à prix élevé), un faible
+recall signifie que des articles bien catégorisés sont incorrectement rejetés et soumis à révision
+humaine inutile → perte de productivité et frustration vendeur.
+• Precision par catégorie : un faible precision sur 'Robe' signifie que des non-robes apparaissent
+dans cette catégorie → dégradation directe de l'expérience de recherche pour une catégorie à
+fort trafic commercial.
+• Impact business différencié : confondre une sandale (35€) avec une bottine (150€) dans le
+moteur de recherche est bien plus grave commercialement que confondre un T-shirt avec une chemise.
+Recommandation : définir des SLA (Service Level Agreements) par catégorie avec des seuils de
+recall minimaux différenciés selon la valeur business et la sensibilité de chaque catégorie.
+
+
+
+Étape 8 — Analyse des erreurs pour l'équipe produit
+
+1. Les erreurs les plus fréquentes sont-elles compréhensibles visuellement ?
+
+Oui, la grande majorité des erreurs sont visuellement compréhensibles — même un expert humain
+du textile pourrait hésiter sur ces cas à 28×28 pixels :
+• Une chemise à col peu visible ressemble à un T-shirt à cette résolution
+• Un pull à col ras ressemble à une chemise sans les détails de texture
+• Une bottine courte ressemble à un sneaker à haute tige vue de profil
+• Un manteau d'été léger ressemble à un trench ou un pull long
+C'est un signal positif pour la production : le modèle ne fait pas d'erreurs aberrantes (classifier
+un pantalon comme un sac). Ses erreurs reflètent une ambiguïté visuelle réelle et documentée,
+ce qui est rassurant pour la confiance opérationnelle en déploiement.
+
+2. Le modèle fait-il des erreurs avec une haute confiance (> 90 %) ? Si oui, c'est un risque en
+production. Pourquoi ?
+
+Oui, une proportion non négligeable des erreurs est faite avec une confiance > 90% (typiquement
+15–25% des erreurs totales). C'est le problème de la sur-confiance (overconfidence) des réseaux
+de neurones standard.
+Pourquoi c'est dangereux en production :
+• Un seuil de confiance pour l'automatisation (ex: publier si confiance > 85%) ne protège pas
+contre ces erreurs — elles passent quand même le filtre et se retrouvent en production.
+• Un opérateur humain qui fait confiance au score de confiance affiché validera sans vérifier,
+croyant la prédiction fiable.
+• Ces erreurs confiantes sont les plus difficiles à détecter dans les logs de production car elles
+ne déclenchent aucune alerte.
+Solution : temperature scaling (calibration post-training) pour aligner les scores de confiance
+sur les taux d'erreur réels. Après calibration, une confiance affichée de 90% doit correspondre
+à 90% de bonnes prédictions.
+
+3. Pour les paires de catégories les plus confondues, proposez une solution business.
+
+• Pull ↔ Chemise : fusionner en une super-catégorie 'Hauts' pour la classification automatique,
+puis laisser le vendeur affiner manuellement via un formulaire simplifié. Ou enrichir le dataset
+avec des images haute résolution où la texture (maille vs tissé) est clairement visible.
+• T-shirt ↔ Chemise : ajouter une validation humaine uniquement pour les prédictions de ces
+deux catégories avec confiance < 0.80. Cela représente ~40% des erreurs mais seulement ~5%
+du flux total — effort ciblé et proportionné.
+• Sneaker ↔ Bottine : demander aux vendeurs de renseigner la hauteur de tige (cheville/mi-
+mollet/genou) via le formulaire upload — information structurée plus fiable que la classification
+visuelle seule. La combiner avec la prédiction CNN améliorerait significativement l'accuracy
+sur cette paire.
+
+
+
+Étape 9 — Visualiser ce que le CNN a appris
+
+1. Les filtres appris détectent-ils des contours, des textures, ou des zones uniformes ?
+
+Les 32 filtres 3×3 appris se répartissent en plusieurs types observables :
+• Détecteurs de contours directionnels (~40% des filtres) : filtres avec une transition nette
+clair/sombre selon une direction — détectent les bords horizontaux, verticaux, et diagonaux.
+Similaires aux filtres de Sobel et Prewitt utilisés en traitement d'images classique.
+• Détecteurs de coins et jonctions (~25%) : filtres avec des transitions dans deux directions
+perpendiculaires — détectent les angles saillants (couture d'une manche, coin d'une semelle).
+• Détecteurs de zones uniformes (~20%) : filtres presque homogènes — réagissent aux plages
+de couleur uniforme (fond blanc standardisé des photos produits Zalando).
+• Filtres complexes/mixtes (~15%) : combinaisons difficiles à interpréter visuellement, mais
+fonctionnellement complémentaires aux types précédents.
+Cette diversité est intentionnelle — l'ensemble des filtres couvre un maximum de motifs visuels
+possibles, ce qui explique la bonne généralisation du CNN.
+
+2. Sur les feature maps, quels filtres réagissent à la silhouette du sneaker ? Lesquels réagissent
+au fond ?
+
+En observant les activations sur le sneaker :
+• Filtres réagissant à la silhouette : les détecteurs de contours s'activent fortement sur le
+contour du sneaker (semelle, tige, lacets) — ces zones créent des transitions pixels abruptes.
+Les filtres détectant les bords horizontaux réagissent à la semelle ; les filtres verticaux réagissent
+aux côtés de la tige.
+• Filtres réagissant au fond : les détecteurs de zones uniformes s'activent sur la zone grise du
+fond standardisé. Certains filtres "inversés" s'activent partout sauf sur le produit.
+• Filtres neutres : certains filtres produisent des activations quasi-nulles sur ce sneaker
+particulier — ils sont spécialisés pour d'autres types de motifs (textures de pull, etc.).
+Ce comportement est exactement attendu : le CNN apprend naturellement à séparer le sujet (produit)
+de l'environnement (fond blanc/gris standardisé chez Zalando).
+
+3. Un comité éthique demande de prouver que le modèle ne discrimine pas selon la couleur de
+fond. Ces visualisations suffisent-elles ? Que proposeriez-vous en complément ?
+
+Non, les feature maps ne suffisent pas. Elles montrent ce que le CNN regarde sur un exemple, mais
+pas s'il existe un biais systématique selon la couleur de fond sur l'ensemble du dataset.
+Compléments nécessaires :
+• Test statistique : comparer l'accuracy du modèle sur des sous-groupes d'images classées par
+couleur de fond (blanc, gris, noir, coloré). Si l'accuracy varie significativement entre groupes
+(ex: 93% sur fond blanc vs 84% sur fond coloré), un biais existe.
+• Counterfactual testing : prendre la même image produit, modifier uniquement la couleur de fond
+via augmentation d'image, vérifier que la prédiction et sa confiance restent identiques. Si la
+prédiction change, le modèle utilise le fond comme signal parasite.
+• Grad-CAM (Gradient-weighted Class Activation Mapping) : technique de visualisation plus
+rigoureuse qui génère une carte thermique surlignant les zones de l'image qui ont le plus
+contribué à la décision finale. Permet de prouver formellement que le modèle se concentre sur
+le produit et non sur le fond ou des artefacts d'image.
+• Rapport de biais documenté : formaliser les tests réalisés, les résultats obtenus et les
+conclusions dans un document d'évaluation éthique, requis pour tout système IA déployé en
+contexte commercial à l'échelle.
+
+
+
+Étape 10 — Debrief : recommandation au comité technique
+
+Insight 1 — ML classique vs Deep Learning
+
+Observation : Le Random Forest obtient ~87–88% d'accuracy (12–13% d'erreur). Le CNN obtient
+~91–93% d'accuracy (7–9% d'erreur). Écart d'environ 5 points en faveur du CNN. Ni l'un ni l'autre
+n'atteint strictement l'objectif business de < 5% d'erreur avec les architectures de base du TP.
+
+Explication : Le Random Forest traite chaque pixel comme une feature indépendante — il ne comprend
+pas que des pixels voisins forment un contour ou une texture. Le CNN exploite la structure spatiale
+via ses filtres convolutifs : il apprend à détecter des bords, textures et formes de façon hiérarchique
+(motifs simples → motifs complexes). C'est un inductive bias fondamentalement adapté aux images,
+absent du Random Forest.
+
+Recommandation : Le surcoût GPU du CNN (~10x plus lent à entraîner que le RF) est pleinement
+justifié par le gain de performance. En production à l'échelle Zalando (45M articles), même 1 point
+d'accuracy supplémentaire représente des centaines de milliers d'articles mieux classifiés et des
+économies substantielles. Le CNN est le minimum viable pour ce cas d'usage. Pour atteindre < 5%
+d'erreur, il faudra du transfer learning (ResNet-50 ou EfficientNet pré-entraîné sur ImageNet).
+
+
+Insight 2 — Dense (MLP) vs CNN
+
+Observation : Le réseau dense obtient ~88–89% d'accuracy, le CNN ~91–93%. Écart de 3–4 points,
+avec un CNN qui converge plus vite (10 époques contre 15) et présente moins d'overfitting grâce
+au Dropout.
+
+Explication : Le MLP aplatit l'image en 784 valeurs et perd toute information spatiale. Il peut
+apprendre des corrélations entre pixels mais sans comprendre leur organisation locale. Les
+convolutions du CNN partagent les mêmes poids sur toute l'image (translation invariance) et
+détectent les mêmes motifs peu importe leur position — une manche reste une manche qu'elle soit
+en haut à gauche ou en bas à droite de l'image.
+
+Recommandation : Un réseau dense suffit pour des données tabulaires ou des embeddings pré-
+calculés. Pour des images brutes, un CNN est indispensable. Règle pratique : si les features ont
+une structure spatiale ou séquentielle (images, texte, audio, séries temporelles), utiliser une
+architecture qui exploite cette structure (CNN, RNN/LSTM, Transformer). Complexifier uniquement
+si les performances de la baseline le justifient.
+
+
+Insight 3 — Fiabilité en production
+
+Observation : Les catégories Pull/Chemise/T-shirt concentrent ~40% des erreurs. 15–25% des
+erreurs sont faites avec une confiance > 90% (sur-confiance). L'accuracy globale de 91–93%
+masque des performances très inégales par catégorie (certaines à >98%, d'autres à ~82%).
+
+Explication : Certaines confusions sont visuellement inévitables à 28×28 pixels — même un humain
+hésiterait. La sur-confiance est une limitation structurelle des réseaux softmax standard, qui
+produisent des probabilités mal calibrées et systématiquement trop élevées.
+
+Recommandation : Déployer le CNN avec un seuil de confiance à 0.80 — publication automatique
+si confiance > 0.80, révision humaine sinon (~20% du flux). Implémenter la calibration par
+temperature scaling pour aligner les scores de confiance sur les taux d'erreur réels. Monitorer
+le taux d'erreur par catégorie en production et définir des SLA différenciés par catégorie selon
+leur valeur business (recall minimum garanti plus élevé pour les catégories premium).
